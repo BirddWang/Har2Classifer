@@ -1,1 +1,9 @@
+# Python Checkpoint files
 *.pt
+
+# Environment
+*env
+
+# Data
+data*/
+__pycache__/
