@@ -2,6 +2,23 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class BetaEncoder(nn.Module):
+    def __init__(self, in_ch=3, out_ch=3, conditional_ch=0, num_lvs=4, base_ch=16, final_act='noact'):
+        super().__init__()
+        self.unet = UNet(in_ch=in_ch, out_ch=out_ch, conditional_ch=conditional_ch,
+                         num_lvs=num_lvs, base_ch=base_ch, final_act=final_act)
+        self.unet.load_state_dict(torch.load("harmonization_public.pt", map_location="cpu")['beta_encoder'])
+
+    def forward(self, in_tensor, condition=None):
+        return self.unet(in_tensor, condition)
+
+    def encode(self, in_tensor, condition=None):
+        """Encode the input without gradient tracking."""
+        self.eval()
+        with torch.no_grad():
+            encoded = self.unet(in_tensor, condition)
+        return encoded
+    
 class UNet(nn.Module):
     def __init__(self, in_ch, out_ch, conditional_ch=0, num_lvs=4, base_ch=16, final_act='noact'):
         super().__init__()
@@ -83,13 +100,3 @@ class Upsample(nn.Module):
         up_sampled_tensor = F.interpolate(in_tensor, size=None, scale_factor=2, mode='bilinear', align_corners=False)
         up_sampled_tensor = self.conv(up_sampled_tensor)
         return torch.cat([encoded_feature, up_sampled_tensor], dim=1)
-
-
-
-def get_beta_encoder(in_ch, out_ch, base_ch, final_act):
-    beta_encoder = UNet(in_ch=in_ch, out_ch=out_ch, base_ch=base_ch, final_act=final_act)
-
-    checkpoint = torch.load("harmonization_public.pt", map_location="cpu")
-    beta_encoder.load_state_dict(checkpoint['beta_encoder']) 
-
-    return beta_encoder
