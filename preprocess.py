@@ -1,6 +1,7 @@
 import SimpleITK as sitk
 import numpy as np
-import os
+import os, argparse
+from tqdm import tqdm
 
 # 1. Bias field correction using N4
 def bias_field_correction(img):
@@ -72,7 +73,7 @@ def crop_or_pad_to_shape(img, target_shape=(192, 224, 192)):
     new_img.SetDirection(img.GetDirection())
     return new_img
 
-def preprocess(input_path, output_dir, mni_path):
+def preprocess(input_path, mni_path):
     """
     Preprocess the input MRI image:
     1. Bias field correction
@@ -80,7 +81,7 @@ def preprocess(input_path, output_dir, mni_path):
     3. Register to MNI space
     4. Crop/pad to (192, 224, 192)
     """
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = os.path.dirname(input_path)
 
     # Load input image
     img = sitk.ReadImage(input_path, sitk.sitkFloat32)
@@ -106,16 +107,35 @@ def preprocess(input_path, output_dir, mni_path):
     
     return img_final
 
+def get_args():
+    parser = argparse.ArgumentParser(description="Preprocess MRI images for HACA3.")
+    parser.add_argument("--input_path", type=str, default="data/ABIDE", help="Path to the input MRI image.")
+    parser.add_argument("--mni_path", type=str, default="data/MNI152_T1_1mm.nii.gz", help="Path to the MNI template image.")
+    return parser.parse_args()
+
+def get_files_path(input_path):
+    """
+    Get all file paths in the input directory.
+    """
+    input_paths = []
+    for root, dirs, files in os.walk(input_path):
+        for file in files:
+            if file.endswith("mprage.nii.gz"):
+                input_paths.append(os.path.join(root, file))
+    return input_paths
+
+def main():
+    args = get_args()
+    input_paths = get_files_path(args.input_path)
+    mni_path = args.mni_path
+    print(f"Found {len(input_paths)} files to process.")
+
+    for input_path in tqdm(input_paths):
+        try:
+            preprocess(input_path, mni_path)
+        except Exception as e:
+            print(f"Error processing {input_path}: {e}")
+    print("Preprocessing completed.")
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Preprocess MRI images for HACA3.")
-    parser.add_argument("input_path", type=str, default="data/Caltech/0051456/session_1/anat_1/mprage.nii.gz", help="Path to the input MRI image.")
-    parser.add_argument("output_dir", type=str, default="data/preprocessed", help="Directory to save the preprocessed images.")
-    parser.add_argument("mni_path", type=str, default="data/MNI152_T1_1mm.nii.gz", help="Path to the MNI template image.")
-    args = parser.parse_args()
-
-    preprocessed_img = preprocess(args.input_path, args.output_dir, args.mni_path)
-    print(f"Preprocessed image saved to {os.path.join(args.output_dir, 'final_haca3_ready.nii.gz')}")
-    print(f"Done!")
-    exit(0)
+    main()
