@@ -7,3 +7,7 @@
 # Data
 data*/
 __pycache__/
+
+# log files
+runs/
+
