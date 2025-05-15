@@ -73,7 +73,7 @@ def crop_or_pad_to_shape(img, target_shape=(192, 224, 192)):
     new_img.SetDirection(img.GetDirection())
     return new_img
 
-def preprocess(input_path, mni_path):
+def preprocess(input_path, mni_path, output_dir=""):
     """
     Preprocess the input MRI image:
     1. Bias field correction
@@ -81,29 +81,35 @@ def preprocess(input_path, mni_path):
     3. Register to MNI space
     4. Crop/pad to (192, 224, 192)
     """
-    output_dir = os.path.dirname(input_path)
+    if output_dir == "":
+        output_dir = os.path.dirname(input_path)
+    
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        
+    name = os.path.basename(input_path).split(".")[0]
 
     # Load input image
     img = sitk.ReadImage(input_path, sitk.sitkFloat32)
 
     # Bias field correction
     img_n4 = bias_field_correction(img)
-    sitk.WriteImage(img_n4, os.path.join(output_dir, "bias_corrected.nii.gz"))
+    # sitk.WriteImage(img_n4, os.path.join(output_dir, "bias_corrected.nii.gz"))
 
     # Resample to isotropic spacing
     img_iso = resample_to_isotropic(img_n4)
-    sitk.WriteImage(img_iso, os.path.join(output_dir, "resampled_iso.nii.gz"))
+    # sitk.WriteImage(img_iso, os.path.join(output_dir, "resampled_iso.nii.gz"))
 
     # Load MNI template
     mni_img = sitk.ReadImage(mni_path, sitk.sitkFloat32)
 
     # Register to MNI space
     img_mni = register_to_mni(img_iso, mni_img)
-    sitk.WriteImage(img_mni, os.path.join(output_dir, "registered_to_mni.nii.gz"))
+    # sitk.WriteImage(img_mni, os.path.join(output_dir, "registered_to_mni.nii.gz"))
 
     # Crop/pad to target shape
     img_final = crop_or_pad_to_shape(img_mni, (192, 224, 192))
-    sitk.WriteImage(img_final, os.path.join(output_dir, "final_haca3_ready.nii.gz"))
+    sitk.WriteImage(img_final, os.path.join(output_dir, f"{name}_prep.nii.gz"))
     
     return img_final
 
@@ -111,6 +117,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Preprocess MRI images for HACA3.")
     parser.add_argument("--input_path", type=str, default="data/ABIDE", help="Path to the input MRI image.")
     parser.add_argument("--mni_path", type=str, default="data/MNI152_T1_1mm.nii.gz", help="Path to the MNI template image.")
+    parser.add_argument("--output_dir", type=str, default="", help="Path to save the preprocessed images.")
     return parser.parse_args()
 
 def get_files_path(input_path):
@@ -120,7 +127,7 @@ def get_files_path(input_path):
     input_paths = []
     for root, dirs, files in os.walk(input_path):
         for file in files:
-            if file.endswith("mprage.nii.gz"):
+            if file.endswith(".nii.gz"):
                 input_paths.append(os.path.join(root, file))
     return input_paths
 
@@ -132,7 +139,7 @@ def main():
 
     for input_path in tqdm(input_paths):
         try:
-            preprocess(input_path, mni_path)
+            preprocess(input_path, mni_path, output_dir=args.output_dir)
         except Exception as e:
             print(f"Error processing {input_path}: {e}")
     print("Preprocessing completed.")
