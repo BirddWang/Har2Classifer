@@ -40,6 +40,39 @@ class Block(nn.Module):
         if self.max_pool:
             x = self.max_pool_layer(x)
         return x
+    
+
+class ResBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, downsample = False):
+        super(ResBlock, self).__init__()
+
+        stride = 1
+        if downsample:
+            stride = 2
+        self.conv1 = nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm3d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm3d(out_channels)
+
+        self.shortcut = nn.Sequential()
+
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv3d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm3d(out_channels)
+            )
+
+    def forward(self, x):
+        identity = self.shortcut(x)
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out += identity
+        out = self.relu(out)
+        return out
 
 class FcBlock(nn.Module):
     """
@@ -101,6 +134,52 @@ class SFCN(nn.Module):
 
         return x
 
+    def get_feature_maps(self, x):
+        feature_maps = []
+        for block in self.blocks:
+            x = block(x)
+            feature_maps.append(x)
+        return feature_maps
+    
+
+class SFCN_RES(nn.Module):
+    def __init__(self, dims, out_dim):
+        super(SFCN_RES, self).__init__()
+        self.blocks = nn.ModuleList()
+
+        dims = [1] + dims
+        for i in range(len(dims)-2):
+            self.blocks.append(ResBlock(dims[i], dims[i+1], downsample=True))
+        
+        self.blocks.append(FcBlock(dims[-2], dims[-1],))
+
+        # handle output dimension
+        if type(out_dim) == int:
+            self.out_shape = out_dim
+            self.out_dim = out_dim
+        else:
+            self.out_shape = out_dim
+            self.out_dim = torch.prod(torch.tensor(out_dim)).item()
+
+        self.fc = nn.Linear(dims[-1], self.out_dim, bias=True)
+    def forward(self, x):
+        """
+        x : (batch_size, 1, n*32, m*32, l*32)
+        """
+        for block in self.blocks:
+            x = block(x)
+        
+        # Global average pooling
+        x = F.adaptive_avg_pool3d(x, 1).view(x.size(0), -1)
+        #x = torch.mean(x, dim=(-3, -2, -1))
+        
+        x = self.fc(x)
+
+        # If the output dimension is not a scalar, reshape it
+        if self.out_shape != self.out_dim:
+            x = x.view(-1, *self.out_shape)
+
+        return x
     def get_feature_maps(self, x):
         feature_maps = []
         for block in self.blocks:
