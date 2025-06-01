@@ -115,9 +115,9 @@ def preprocess(input_path, mni_path, output_dir=""):
 
 def get_args():
     parser = argparse.ArgumentParser(description="Preprocess MRI images for HACA3.")
-    parser.add_argument("--input_path", type=str, default="data/ABIDE", help="Path to the input MRI image.")
+    parser.add_argument("--input_path", type=str, default="", help="Path to the input MRI image.")
     parser.add_argument("--mni_path", type=str, default="data/MNI152_T1_1mm.nii.gz", help="Path to the MNI template image.")
-    parser.add_argument("--output_dir", type=str, default="", help="Path to save the preprocessed images.")
+    parser.add_argument("--output_dir", type=str, default="/media/robin/4B48E5E39EAFFEB2/ADNI/AD-ALL-prep", help="Path to save the preprocessed images.")
     return parser.parse_args()
 
 def get_files_path(input_path):
@@ -133,7 +133,12 @@ def get_files_path(input_path):
 
 def main():
     args = get_args()
-    input_paths = get_files_path(args.input_path)
+    paths = get_files_path("/media/robin/4B48E5E39EAFFEB2/T1-AD-ALL-nii")
+    print(f"Total files found: {len(paths)}")
+    exist_name = get_exist_name()
+    input_paths = del_exist_file(paths, exist_name)[:1500]
+    print(f"New paths to process: {len(input_paths)}")
+    print(input_paths[:10])
     mni_path = args.mni_path
     print(f"Found {len(input_paths)} files to process.")
 
@@ -143,6 +148,40 @@ def main():
         except Exception as e:
             print(f"Error processing {input_path}: {e}")
     print("Preprocessing completed.")
+
+def get_exist_name():
+    exist_name = []
+    exist_dir = "/media/robin/4B48E5E39EAFFEB2/AD-to6-nii"
+    for root, dirs, files in os.walk(exist_dir):
+        for file in files:
+            if file.endswith(".nii.gz"):
+                name = file.split("/")[-1].split(".")[0]
+                exist_name.append(name)
+    exist_dir = "/media/robin/4B48E5E39EAFFEB2/T1-AD-BASE-nii"
+    for root, dirs, files in os.walk(exist_dir):
+        for file in files:
+            if file.endswith(".nii.gz"):
+                name = file.split("/")[-1].split(".")[0]
+                exist_name.append(name)
+    
+    print(f"Existing files: {len(exist_name)}")
+    print(f"Existing names: {exist_name[:10]}...")
+    return exist_name
+
+def del_exist_file(input_paths, exist_name):
+    """
+    Delete files that already exist in the output directory.
+    """
+    new_paths = []
+    for pth in input_paths:
+        name = pth.split("/")[-1].split(".")[0]
+        if name in exist_name:
+            # print(f"File {name} already exists, skipping.")
+            continue
+        new_paths.append(pth)
+    return new_paths
+
+
 
 if __name__ == "__main__":
     main()
