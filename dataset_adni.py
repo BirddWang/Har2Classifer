@@ -1,33 +1,37 @@
 from torch.utils.data import Dataset
-from torchvision.transforms import Compose, Pad, CenterCrop, ToTensor, ToPILImage
+from torchvision.transforms import Compose, Pad, CenterCrop, ToTensor, ToPILImage, RandomHorizontalFlip, RandomAffine, ColorJitter
 import os
 import nibabel as nib
 import numpy as np
 import torch
 import random
+import torchio as tio
+import hashlib
 
-default_transform = Compose([ToPILImage(), Pad(40), CenterCrop([224, 224])])
+transform = tio.Compose([
+    tio.RandomFlip(axes=('LR',), p=0.5),
+    tio.RandomAffine(scales=(0.9, 1.1), degrees=10),
+    tio.RandomElasticDeformation(p=0.2),
+    tio.RandomNoise(p=0.3),
+    tio.CropOrPad((192, 224, 224), padding_mode='constant'),
+    tio.RescaleIntensity((0, 1))
+])
 
-def slice_to_tensor(slice):
-    # shape: (192, 224)
-    p99 = np.percentile(slice, 95)
-    slice = slice / (p99 + 1e-5)
-    slice = np.clip(slice, a_min=0.0, a_max=1.0)
-    slice = np.array(default_transform(slice))
-    slice = ToTensor()(slice)
-    return slice
+def get_cache_path(fpath):
+    # Create a unique cache path based on the file path
+    hash_object = hashlib.md5(fpath.encode())
+    cache_path = f"tmp/{hash_object.hexdigest()}.pt"
+    return cache_path
 
-def get_tensor_from_fpath(fpath):
-    if os.path.exists(fpath):
-        img = nib.load(fpath).get_fdata().astype(np.float32).transpose(0, 2, 1)
-        # shape: (192, 224, 192)
-        tensor_img = torch.empty(0)
-        for slice in img:
-            slice = slice_to_tensor(slice)
-            tensor_img = torch.cat((tensor_img, slice), dim=0)
-    else:
-        tensor_img = torch.ones([192, 224, 224])
-    return tensor_img
+def get_dir_size_gb(dir_path):
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(dir_path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            if os.path.isfile(fp):
+                total_size += os.path.getsize(fp)
+    return total_size / (1024 ** 3)  # Convert bytes to gigabytes
+
 
 def background_mask(img):
     # shape: (192, 224, 224)
@@ -38,31 +42,84 @@ def background_mask(img):
         masks = torch.cat((masks, mask.unsqueeze(0)), dim=0)
     return masks
 
-def ADNI_BASE_AD():
-    dir = 'data/ADNI/AD-BASE-prep/'
-    return [os.path.join(dir, file) for file in os.listdir(dir) if file.endswith('.nii.gz')]
-def ADNI_BASE_CN():
-    dir = 'data/ADNI/CN-BASE-prep/'
-    return [os.path.join(dir, file) for file in os.listdir(dir) if file.endswith('.nii.gz')]
-
 
 class ADNI(Dataset):
-    def __init__(self):
+    def __init__(self, training=True, dir = "/media/robin/4B48E5E39EAFFEB2/ADNI", data_type = "harmonized"):
         super(ADNI, self).__init__()
-        self.img_paths = ADNI_BASE_AD() + ADNI_BASE_CN()
+        if data_type == "harmonized":
+            ad_paths = [os.path.join(dir, data_type, "ad", path) for path in os.listdir(os.path.join(dir, data_type, "ad")) if path.endswith("_fusion.nii.gz")]
+            cn_paths = [os.path.join(dir, data_type, "cn", path) for path in os.listdir(os.path.join(dir, data_type, "cn")) if path.endswith("_fusion.nii.gz")]
+        elif data_type == "preprocessed" or data_type == "beta":
+            ad_paths = [path for path in os.listdir(os.path.join(dir, data_type, "ad")) if path.endswith("_prep.nii.gz")]
+            cn_paths = [path for path in os.listdir(os.path.join(dir, data_type, "cn")) if path.endswith("_prep.nii.gz")]
+
+        print(f"Found {len(ad_paths)} AD and {len(cn_paths)} CN images in {data_type} dataset")
+        self.img_paths = ad_paths + cn_paths
+        self.len_ad = len(ad_paths)
+        self.len_cn = len(cn_paths)
+        self.labels = {path:1 for path in ad_paths}
+        self.labels.update({path:0 for path in cn_paths})
+
+        self.mask = False
+        if data_type == "beta":
+            self.mask = True
+
         random.shuffle(self.img_paths)
+
+    def slice_to_tensor(self, slice):
+        # shape: (192, 224)
+        p99 = np.percentile(slice, 95)
+        slice = slice / (p99 + 1e-5)
+        slice = np.clip(slice, a_min=0.0, a_max=1.0)
+        slice = ToTensor()(slice)
+        return slice
+
+    def get_tensor_from_fpath(self, fpath):
+        if os.path.exists(get_cache_path(fpath)):
+            tensor_img = torch.load(get_cache_path(fpath))
+            tensor_img = torch.squeeze(transform(torch.unsqueeze(tensor_img, dim=0)), dim=0)
+            return tensor_img 
+        
+        if os.path.exists(fpath):
+            img = nib.load(fpath).get_fdata().astype(np.float32).transpose(0, 2, 1)
+            # shape: (192, 224, 192)
+            # print(f"Loading {fpath} with shape {img.shape}")
+            tensor_img = torch.empty(0)
+            for slice in img:
+                slice = self.slice_to_tensor(slice)
+                tensor_img = torch.cat((tensor_img, slice), dim=0)
+        else:
+            tensor_img = torch.ones([192, 224, 224])
+
+        tensor_img = transform(torch.unsqueeze(tensor_img, dim=0))
+        tensor_img = torch.squeeze(tensor_img, dim=0)
+        if get_dir_size_gb("tmp") < 100:
+            torch.save(tensor_img, get_cache_path(fpath))
+            # print(f"cached {fpath}")
+        return tensor_img
 
     def __len__(self):
         return len(self.img_paths)
     
     def __getitem__(self, idx):
+        # print(f"Getting item {idx} from dataset")
+        # # flush print buffer
+        # import sys
+        # sys.stdout.flush()
         img_path = self.img_paths[idx]
-        label = 1 if 'AD-' in img_path else 0
-        img = get_tensor_from_fpath(img_path)
-        mask = background_mask(img)
-        masked_img = img * mask
-        return {
-            "masked_image": masked_img,
-            "label": label,
-            "mask": mask,
-        }
+        label = self.labels[img_path]
+        img = self.get_tensor_from_fpath(img_path)
+        if self.mask:
+            mask = background_mask(img)
+            masked_img = img * mask
+            return {
+                "image": img, 
+                "masked_image": masked_img,
+                "label": label,
+                "mask": mask,
+            }
+        else:
+            return {
+                "image": img, 
+                "label": label,
+            }
