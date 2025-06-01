@@ -1,5 +1,6 @@
 # Python Checkpoint files
 *.pt
+*.pth
 
 # Environment
 *env
@@ -10,4 +11,6 @@ __pycache__/
 
 # log files
 runs/
+tmp/
+
 
