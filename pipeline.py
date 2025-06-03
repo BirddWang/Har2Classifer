@@ -34,12 +34,12 @@ class EarlyStopping:
 class ADNI_Classifier:
     def __init__(self, args):
         self.encoder, self.classifier = self.init_model(args.classifier_state_dict)
-        self.dataset = ADNI(training=True)
+        self.dataset = ADNI(training=True, data_type='preprocessed')
         print(f"Dataset initialized, length: {len(self.dataset)}")
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print("Device set to:", self.device)
-        self.classifier.to(self.device)
-        self.encoder.to(self.device)
+        self.classifier.to(self.device, non_blocking=True)
+        self.encoder.to(self.device, non_blocking=True)
         self.recorder = Recorder(log_dir=args.log_dir)
         # training
         self.epochs = args.epochs
@@ -85,8 +85,8 @@ class ADNI_Classifier:
 
 
     def encode(self, img, mask):
-        img = img.to(self.device)
-        mask = mask.to(self.device)
+        img = img.to(self.device, non_blocking=True)
+        mask = mask.to(self.device, non_blocking=True)
         beta = self.get_beta(img, mask)
         return beta
         
@@ -98,8 +98,8 @@ class ADNI_Classifier:
 
         self.encoder.eval()
         with torch.no_grad():
-            img = img.to(self.device)
-            mask = mask.to(self.device)
+            img = img.to(self.device, non_blocking=True)
+            mask = mask.to(self.device, non_blocking=True)
             beta = self.get_beta(torch.unsqueeze(img, dim=1), torch.unsqueeze(mask, dim=1))
             print(beta.shape)
             beta = beta.unsqueeze(0).unsqueeze(0)
@@ -138,17 +138,16 @@ class ADNI_Classifier:
         with torch.no_grad():
             for i, batch in enumerate(tqdm(val_loader)):
                 if only_use_beta:
-                    img = batch['masked_image'].to(self.device)
-                    mask = batch['mask'].to(self.device)
+                    img = batch['masked_image'].to(self.device, non_blocking=True)
+                    mask = batch['mask'].to(self.device, non_blocking=True)
                     beta = self.get_beta(img, mask)
                     pred = self.classifier(beta).view(-1)
-                    label = batch['label'].to(self.device).float()
+                    label = batch['label'].to(self.device, non_blocking=True).float()
                     loss = criterion(pred, label)
                 else:
-                    img = batch['image'].to(self.device)
-                    img = torch.unsqueeze(img, dim=1)  # [B, 1, 192, 224, 224]
+                    img = batch['image'].to(self.device, non_blocking=True)
                     pred = self.classifier(img).view(-1)
-                    label = batch['label'].to(self.device).float()
+                    label = batch['label'].to(self.device, non_blocking=True).float()
                     loss = criterion(pred, label)
                 
                 total_loss += loss.item()
@@ -175,7 +174,7 @@ class ADNI_Classifier:
             'f1_score': f1,
         }
 
-    def train(self, only_use_beta:bool = False, warmup_epochs=20):
+    def train(self, warmup_epochs=20):
         print("Training...")
         print(f"Learning rate: {self.lr}, Train batch size: {self.train_batch_size}, Val batch size: {self.val_batch_size}, Weight decay: {self.weight_decay}")
         # print classifier structure
@@ -185,10 +184,10 @@ class ADNI_Classifier:
         main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs - warmup_epochs, eta_min=1e-6)
         scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs])
         criterion = torch.nn.BCEWithLogitsLoss()
-        self.precision.to(self.device)
-        self.recall.to(self.device)
-        self.f1_score.to(self.device)
-        self.auroc.to(self.device)
+        self.precision.to(self.device, non_blocking=True)
+        self.recall.to(self.device, non_blocking=True)
+        self.f1_score.to(self.device, non_blocking=True)
+        self.auroc.to(self.device, non_blocking=True)
 
         train_indices, val_indices = self.balanced_split()
         train_data = torch.utils.data.Subset(self.dataset, train_indices)
@@ -211,52 +210,48 @@ class ADNI_Classifier:
             train_data,
             batch_size=self.train_batch_size,
             sampler=sampler,
+            num_workers=8,
+            pin_memory=True,
+
         )
-        val_loader = torch.utils.data.DataLoader(val_data, batch_size=self.val_batch_size, shuffle=False)
+        val_loader = torch.utils.data.DataLoader(
+            val_data, 
+            batch_size=self.val_batch_size, 
+            shuffle=False, 
+            num_workers=8,
+            pin_memory=True,
+        )
 
         # Ensure validation dataset does not use training augmentations
         scaler = torch.amp.grad_scaler.GradScaler()
-
         self.classifier.train()
         for epoch in tqdm(range(self.epochs)):
             if epoch < warmup_epochs: print(f"Warmup Epoch {epoch + 1}/{warmup_epochs}")
             else: print(f"Epoch {epoch + 1 - warmup_epochs}/{self.epochs - warmup_epochs}")
             losses = []
-            all_preds = []
+            all_preds = torch.empty(0, device=self.device)
             all_labels = []
             for i, batch in enumerate(train_loader):
                 optimizer.zero_grad()
                 # [B, 192, 224, 224]
-                if only_use_beta:
-                    img = batch['masked_image'].to(self.device)
-                    mask = batch['mask'].to(self.device)
-                    with torch.amp.autocast('cuda'):
-                        with torch.no_grad():
-                            beta = self.get_beta(img, mask)
-                        pred = self.classifier(beta).view(-1)
-                        label = batch['label'].to(self.device).float()
-                        loss = criterion(pred, label)
-                else:
-                    img = batch['image'].to(self.device)
-                    with torch.amp.autocast('cuda'):
-                        # img is [B, 192, 224, 224]
-                        # to [B, 1, 192, 224, 224]
-                        img = torch.unsqueeze(img, dim=1)
-                        pred = self.classifier(img).view(-1)
-                        label = batch['label'].to(self.device).float()
-                        loss = criterion(pred, label)
+                img = batch['image'].to(self.device, non_blocking=True)
+                with torch.amp.autocast('cuda'):
+                    # img is [B, C(1), 192, 224, 224]
+                    pred = self.classifier(img).view(-1)
+                    label = batch['label'].to(self.device, non_blocking=True).float()
+                    loss = criterion(pred, label)
 
                 scaler.scale(loss).backward()   
                 scaler.step(optimizer)
                 scaler.update()
                 losses.append(loss.item())
-                with torch.no_grad():
-                    pred = torch.sigmoid(pred)
-                    pred = (pred > 0.5).float()
-                all_preds.extend(pred.cpu().numpy())
+                all_preds = torch.cat((all_preds, pred), dim=0)
                 all_labels.extend(label.cpu().numpy())
 
-                if (i+1) % 100 == 0 or i == len(train_loader) - 1:
+                if (i+1) % 25 == 0 or i == len(train_loader) - 1:
+                    with torch.no_grad():
+                        all_preds = torch.sigmoid(all_preds)
+                    all_preds = (all_preds > 0.5).float().cpu().numpy()
                     avg_loss = sum(losses) / len(losses)
 
                     auc = self.auroc(torch.tensor(all_preds, device=self.device), torch.tensor(all_labels, device=self.device))
@@ -276,8 +271,7 @@ class ADNI_Classifier:
                     print("Confusion Matrix:")
                     print(confusion)
                     losses = []
-                    accs = []
-                    all_preds = []
+                    all_preds = torch.empty(0, device=self.device)
                     all_labels = []
                     
             res = self.test(val_loader, criterion)
@@ -293,10 +287,10 @@ class ADNI_Classifier:
             print(res['loss'])
             
             if (epoch + 1) % 10 == 0:
-                torch.save(self.classifier.state_dict(), f'checkpoint_harmonize_epoch-{epoch + 1}.pth')
+                torch.save(self.classifier.state_dict(), f'checkpoints/{self.dataset.data_type}_epoch-{epoch + 1}.pth')
             scheduler.step()
         self.recorder.close()
-        torch.save(self.classifier.state_dict(), 'harmonize_final_model.pth')
+        torch.save(self.classifier.state_dict(), f'{self.dataset.data_type}_final_model.pth')
 
 #### help functions for beta ####
 def reparameterize_logit(logit):
@@ -318,8 +312,8 @@ def get_args():
     parser.add_argument('--classifier_state_dict', type=str, default=None, help='Path to the classifier state dict')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to train')
     parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate')
-    parser.add_argument('--train_batch_size', type=int, default=8, help='Batch size for training')
-    parser.add_argument('--val_batch_size', type=int, default=4, help='Batch size for validation')
+    parser.add_argument('--train_batch_size', type=int, default=16, help='Batch size for training')
+    parser.add_argument('--val_batch_size', type=int, default=16, help='Batch size for validation')
     parser.add_argument('--weight_decay', type=float, default=1e-3, help='Weight decay for optimizer')
     parser.add_argument('--log_dir', type=str, default='runs', help='Directory to save logs')
     parser.add_argument('--beta_only', action='store_true', help='Use only beta for training and evaluation')
@@ -330,4 +324,4 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
     classifier = ADNI_Classifier(args)
-    classifier.train(only_use_beta=args.beta_only)
+    classifier.train()
