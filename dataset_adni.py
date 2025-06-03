@@ -1,5 +1,5 @@
 from torch.utils.data import Dataset
-from torchvision.transforms import Compose, Pad, CenterCrop, ToTensor, ToPILImage, RandomHorizontalFlip, RandomAffine, ColorJitter
+from torchvision.transforms import ToTensor
 import os
 import nibabel as nib
 import numpy as np
@@ -25,7 +25,7 @@ def get_cache_path(fpath):
 
 def get_dir_size_gb(dir_path):
     total_size = 0
-    for dirpath, dirnames, filenames in os.walk(dir_path):
+    for dirpath, _, filenames in os.walk(dir_path):
         for f in filenames:
             fp = os.path.join(dirpath, f)
             if os.path.isfile(fp):
@@ -44,14 +44,14 @@ def background_mask(img):
 
 
 class ADNI(Dataset):
-    def __init__(self, training=True, dir = "/media/robin/4B48E5E39EAFFEB2/ADNI", data_type = "harmonized"):
+    def __init__(self, training=True, dir = "./data/ADNI", data_type = "harmonized"):
         super(ADNI, self).__init__()
         if data_type == "harmonized":
             ad_paths = [os.path.join(dir, data_type, "ad", path) for path in os.listdir(os.path.join(dir, data_type, "ad")) if path.endswith("_fusion.nii.gz")]
             cn_paths = [os.path.join(dir, data_type, "cn", path) for path in os.listdir(os.path.join(dir, data_type, "cn")) if path.endswith("_fusion.nii.gz")]
         elif data_type == "preprocessed" or data_type == "beta":
-            ad_paths = [path for path in os.listdir(os.path.join(dir, data_type, "ad")) if path.endswith("_prep.nii.gz")]
-            cn_paths = [path for path in os.listdir(os.path.join(dir, data_type, "cn")) if path.endswith("_prep.nii.gz")]
+            ad_paths = [os.path.join(dir, data_type, "ad", path) for path in os.listdir(os.path.join(dir, data_type, "ad")) if path.endswith("_prep.nii.gz")]
+            cn_paths = [os.path.join(dir, data_type, "cn", path) for path in os.listdir(os.path.join(dir, data_type, "cn")) if path.endswith("_prep.nii.gz")]
 
         print(f"Found {len(ad_paths)} AD and {len(cn_paths)} CN images in {data_type} dataset")
         self.img_paths = ad_paths + cn_paths
@@ -59,6 +59,7 @@ class ADNI(Dataset):
         self.len_cn = len(cn_paths)
         self.labels = {path:1 for path in ad_paths}
         self.labels.update({path:0 for path in cn_paths})
+        self.data_type = data_type
 
         self.mask = False
         if data_type == "beta":
@@ -77,11 +78,16 @@ class ADNI(Dataset):
     def get_tensor_from_fpath(self, fpath):
         if os.path.exists(get_cache_path(fpath)):
             tensor_img = torch.load(get_cache_path(fpath))
-            tensor_img = torch.squeeze(transform(torch.unsqueeze(tensor_img, dim=0)), dim=0)
+            # tensor_img.cuda()
+            tensor_img = transform(torch.unsqueeze(tensor_img, dim=0))
             return tensor_img 
         
         if os.path.exists(fpath):
-            img = nib.load(fpath).get_fdata().astype(np.float32).transpose(0, 2, 1)
+            try: 
+                img = nib.load(fpath).get_fdata().astype(np.float32).transpose(0, 2, 1)
+            except Exception as e:
+                print(f"Error loading {fpath}: {e}")
+                return torch.ones([1, 192, 224, 224])
             # shape: (192, 224, 192)
             # print(f"Loading {fpath} with shape {img.shape}")
             tensor_img = torch.empty(0)
@@ -90,12 +96,14 @@ class ADNI(Dataset):
                 tensor_img = torch.cat((tensor_img, slice), dim=0)
         else:
             tensor_img = torch.ones([192, 224, 224])
+            print("Error: File not found", fpath)
 
-        tensor_img = transform(torch.unsqueeze(tensor_img, dim=0))
-        tensor_img = torch.squeeze(tensor_img, dim=0)
+        
         if get_dir_size_gb("tmp") < 100:
             torch.save(tensor_img, get_cache_path(fpath))
             # print(f"cached {fpath}")
+        # tensor_img = tensor_img.cuda() 
+        tensor_img = transform(torch.unsqueeze(tensor_img, dim=0))
         return tensor_img
 
     def __len__(self):
@@ -109,17 +117,7 @@ class ADNI(Dataset):
         img_path = self.img_paths[idx]
         label = self.labels[img_path]
         img = self.get_tensor_from_fpath(img_path)
-        if self.mask:
-            mask = background_mask(img)
-            masked_img = img * mask
-            return {
-                "image": img, 
-                "masked_image": masked_img,
-                "label": label,
-                "mask": mask,
-            }
-        else:
-            return {
-                "image": img, 
-                "label": label,
-            }
+        return {
+            "image": img, 
+            "label": label,
+        }
