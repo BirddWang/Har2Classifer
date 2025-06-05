@@ -133,10 +133,11 @@ def get_files_path(input_path):
 
 def main():
     args = get_args()
-    paths = get_files_path("/media/robin/4B48E5E39EAFFEB2/T1-AD-ALL-nii")
+    paths = get_files_path("../haca3/data/nifti_output")
+    input_paths = paths
     print(f"Total files found: {len(paths)}")
-    exist_name = get_exist_name()
-    input_paths = del_exist_file(paths, exist_name)[:1500]
+    # exist_name = get_exist_name()
+    # input_paths = del_exist_file(paths, exist_name)[:1500]
     print(f"New paths to process: {len(input_paths)}")
     print(input_paths[:10])
     mni_path = args.mni_path
