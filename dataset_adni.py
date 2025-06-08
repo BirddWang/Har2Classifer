@@ -7,6 +7,7 @@ import torch
 import random
 import torchio as tio
 import hashlib
+import pickle as pkl
 
 transform = tio.Compose([
     tio.RandomFlip(axes=('LR',), p=0.5),
@@ -49,9 +50,12 @@ class ADNI(Dataset):
         if data_type == "harmonized":
             ad_paths = [os.path.join(dir, data_type, "ad", path) for path in os.listdir(os.path.join(dir, data_type, "ad")) if path.endswith("_fusion.nii.gz")]
             cn_paths = [os.path.join(dir, data_type, "cn", path) for path in os.listdir(os.path.join(dir, data_type, "cn")) if path.endswith("_fusion.nii.gz")]
-        elif data_type == "preprocessed" or data_type == "beta":
+        elif data_type == "preprocessed":
             ad_paths = [os.path.join(dir, data_type, "ad", path) for path in os.listdir(os.path.join(dir, data_type, "ad")) if path.endswith("_prep.nii.gz")]
             cn_paths = [os.path.join(dir, data_type, "cn", path) for path in os.listdir(os.path.join(dir, data_type, "cn")) if path.endswith("_prep.nii.gz")]
+        elif data_type == "beta":
+            ad_paths = [os.path.join(dir, data_type, "ad", path) for path in os.listdir(os.path.join(dir, data_type, "ad")) if path.endswith("_beta.pkl")]
+            cn_paths = [os.path.join(dir, data_type, "cn", path) for path in os.listdir(os.path.join(dir, data_type, "cn")) if path.endswith("_beta.pkl")]
 
         print(f"Found {len(ad_paths)} AD and {len(cn_paths)} CN images in {data_type} dataset")
         self.img_paths = ad_paths + cn_paths
@@ -60,10 +64,6 @@ class ADNI(Dataset):
         self.labels = {path:1 for path in ad_paths}
         self.labels.update({path:0 for path in cn_paths})
         self.data_type = data_type
-
-        self.mask = False
-        if data_type == "beta":
-            self.mask = True
 
         random.shuffle(self.img_paths)
 
@@ -77,23 +77,33 @@ class ADNI(Dataset):
 
     def get_tensor_from_fpath(self, fpath):
         if os.path.exists(get_cache_path(fpath)):
-            tensor_img = torch.load(get_cache_path(fpath))
-            # tensor_img.cuda()
-            tensor_img = transform(torch.unsqueeze(tensor_img, dim=0))
-            return tensor_img 
-        
-        if os.path.exists(fpath):
-            try: 
-                img = nib.load(fpath).get_fdata().astype(np.float32).transpose(0, 2, 1)
+            try:
+                tensor_img = torch.load(get_cache_path(fpath))
+                tensor_img = transform(torch.unsqueeze(tensor_img, dim=0))
+                return tensor_img 
+                # print(f"Loaded cached {fpath}")
             except Exception as e:
-                print(f"Error loading {fpath}: {e}")
-                return torch.ones([1, 192, 224, 224])
+                print(f"Error loading cached {fpath}: {e}")
+            # tensor_img.cuda()
+            
+        if os.path.exists(fpath):
+            if self.data_type != "beta":
+                try: 
+                    img = nib.load(fpath).get_fdata().astype(np.float32).transpose(0, 2, 1)
+                    tensor_img = torch.empty(0)
+                    for slice in img:
+                        slice = self.slice_to_tensor(slice)
+                        tensor_img = torch.cat((tensor_img, slice), dim=0)
+                except Exception as e:
+                    print(f"Error loading {fpath}: {e}")
+                    return torch.ones([1, 192, 224, 224])
             # shape: (192, 224, 192)
             # print(f"Loading {fpath} with shape {img.shape}")
-            tensor_img = torch.empty(0)
-            for slice in img:
-                slice = self.slice_to_tensor(slice)
-                tensor_img = torch.cat((tensor_img, slice), dim=0)
+            else:
+                with open(fpath, 'rb') as f:
+                    tensor_img = pkl.load(f)
+                    tensor_img = torch.tensor(tensor_img, dtype=torch.float32)
+            print(f"Loaded {fpath} with shape {tensor_img.shape}")
         else:
             tensor_img = torch.ones([192, 224, 224])
             print("Error: File not found", fpath)
