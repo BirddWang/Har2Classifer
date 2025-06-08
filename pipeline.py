@@ -40,7 +40,7 @@ class ADNI_Classifier:
         print("Device set to:", self.device)
         self.classifier.to(self.device, non_blocking=True)
         self.encoder.to(self.device, non_blocking=True)
-        self.recorder = Recorder(log_dir=args.log_dir)
+        self.recorder = Recorder(log_dir=f"{args.log_dir}/{self.dataset.data_type}")
         # training
         self.epochs = args.epochs
         self.lr = args.lr
@@ -174,7 +174,7 @@ class ADNI_Classifier:
             'f1_score': f1,
         }
 
-    def train(self, warmup_epochs=20):
+    def train(self, warmup_epochs=20, mid_path=None):
         print("Training...")
         print(f"Learning rate: {self.lr}, Train batch size: {self.train_batch_size}, Val batch size: {self.val_batch_size}, Weight decay: {self.weight_decay}")
         # print classifier structure
@@ -184,6 +184,14 @@ class ADNI_Classifier:
         main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs - warmup_epochs, eta_min=1e-6)
         scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs])
         criterion = torch.nn.BCEWithLogitsLoss()
+
+        if mid_path is not None:
+            print(f"Loading beta model from {mid_path}")
+            checkpoint = torch.load(mid_path, map_location=self.device)
+            self.classifier.load_state_dict(checkpoint['classifier_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
         self.precision.to(self.device, non_blocking=True)
         self.recall.to(self.device, non_blocking=True)
         self.f1_score.to(self.device, non_blocking=True)
@@ -225,7 +233,7 @@ class ADNI_Classifier:
         # Ensure validation dataset does not use training augmentations
         scaler = torch.amp.grad_scaler.GradScaler()
         self.classifier.train()
-        for epoch in tqdm(range(self.epochs)):
+        for epoch in tqdm(range(checkpoint['epoch']+1, self.epochs) if checkpoint is not None else range(self.epochs)):
             if epoch < warmup_epochs: print(f"Warmup Epoch {epoch + 1}/{warmup_epochs}")
             else: print(f"Epoch {epoch + 1 - warmup_epochs}/{self.epochs - warmup_epochs}")
             losses = []
@@ -287,6 +295,15 @@ class ADNI_Classifier:
             print(res['loss'])
             
             if (epoch + 1) % 10 == 0:
+                # save several things to maintain the corrupted state
+                print(f"Saving model at epoch {epoch + 1}")
+                torch.save({
+                    'epoch': epoch,
+                    'classifier_state_dict': self.classifier.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(), 
+                    'loss': res['loss'],
+                }, f'checkpoints/{self.dataset.data_type}_epoch-{epoch + 1}_complete.pth')
                 torch.save(self.classifier.state_dict(), f'checkpoints/{self.dataset.data_type}_epoch-{epoch + 1}.pth')
             scheduler.step()
         self.recorder.close()
@@ -317,6 +334,7 @@ def get_args():
     parser.add_argument('--weight_decay', type=float, default=1e-3, help='Weight decay for optimizer')
     parser.add_argument('--log_dir', type=str, default='runs', help='Directory to save logs')
     parser.add_argument('--beta_only', action='store_true', help='Use only beta for training and evaluation')
+    parser.add_argument('--midi_path', type=str, default='checkpoints/beta_epoch-110_complete.pth', help='Path to the midi model state dict')
     args = parser.parse_args()
     return args
 
@@ -324,4 +342,4 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
     classifier = ADNI_Classifier(args)
-    classifier.train()
+    classifier.train(mid_path = args.midi_path)
