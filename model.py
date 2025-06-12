@@ -1,4 +1,4 @@
-from dataset_adni import ADNI
+from dataset import ADNI
 import torch.nn.functional as F
 from torchmetrics.classification import BinaryAUROC, BinaryF1Score, BinaryPrecision, BinaryRecall
 from beta_encoder import BetaEncoder
