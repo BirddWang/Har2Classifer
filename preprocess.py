@@ -1,7 +1,29 @@
 import SimpleITK as sitk
 import numpy as np
-import os, argparse
+import os, argparse, subprocess
 from tqdm import tqdm
+
+def convert_dicom_to_nifti(dicom_dir:str, output_dir:str, file_template:str="%n_%f_%d"):
+    """
+    Convert DICOM files to NIfTI format using dcm2niix.
+    Args:
+        dicom_dir (str): Directory containing DICOM files.
+        output_dir (str): Directory to save the converted NIfTI files.
+        file_template (str): Template for naming the output files.
+    """
+    try:
+        subprocess.run([
+            "dcm2niix_afni",
+            "-z", "y", 
+            "-o", output_dir,
+            "-f", file_template,
+            dicom_dir
+        ], stdout=subprocess.DEVNULL)
+    except Exception as e:
+        print(f"Error: {e}")
+        print(f"Error converting {dicom_dir} to NIfTI.")
+        return False
+    return True
 
 # 1. Bias field correction using N4
 def bias_field_correction(img):
