@@ -10,8 +10,8 @@ data*/
 __pycache__/
 
 # log files
-runs/
+# runs/
 tmp/
-checkpoints
+# checkpoints
 
 
