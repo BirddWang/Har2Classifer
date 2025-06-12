@@ -1,6 +1,6 @@
 # Python Checkpoint files
 *.pt
-*.pth
+# *.pth
 
 # Environment
 *env
